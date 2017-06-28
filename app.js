@@ -1,0 +1,89 @@
+'use strict';
+const express = require('express');
+const app = express();
+var RTM = require('satori-rtm-sdk');
+var endpoint = "wss://open-data.api.satori.com";
+var appKey = "CAAA7E7fb0B1cCdbA01B2442E7C999a8";
+var roleSecretKey = "xxxxxxxxxxxxxxxxxxxxxxxxxx";
+var channel = 'openaq';
+var https = require('https');
+var rtm;
+var prev = [];
+function OPEAQcall() {
+    https.get('https://api.openaq.org/v1/latest?limit=10000', function (res) {
+        res.setEncoding('utf8');
+        var body = [];
+        res.on('data', function (chunk) {
+            body.push(chunk);
+        });
+        res.on('end', function () {
+            var json = JSON.parse(body.join(''));
+            var tmp = json.results.map((i) => {
+                var s = JSON.stringify(i);
+                if (prev && prev.length && prev.indexOf(s) === -1) {
+                    var out = JSON.parse(s);
+                    var tmp = i.measurements;
+                    out.measurements = {};
+                    tmp.forEach(m => {
+                        if (!out.measurements[m.parameter])
+                            out.measurements[m.parameter] = {
+                                value: m.value,
+                                lastUpdated: m.lastUpdated,
+                                unit: m.unit,
+                                sourceName: m.sourceName
+                            };
+                        else {
+                            if (!out.measurements[m.parameter].old)
+                                out.measurements[m.parameter].old = [];
+                            if (new Date(m.lastUpdated) > new Date(out.measurements[m.parameter].lastUpdated)) {
+                                out.measurements[m.parameter].old.push({
+                                    value: out.measurements[m.parameter].value,
+                                    lastUpdated: out.measurements[m.parameter].lastUpdated,
+                                    unit: out.measurements[m.parameter].unit,
+                                    sourceName: out.measurements[m.parameter].sourceName
+                                });
+                                out.measurements[m.parameter].value = m.value;
+                                out.measurements[m.parameter].lastUpdated = m.lastUpdated;
+                                out.measurements[m.parameter].unit = m.unit;
+                                out.measurements[m.parameter].sourceName = m.sourceName;
+                            }
+                            else {
+                                out.measurements[m.parameter].old.push({
+                                    value: m.value,
+                                    lastUpdated: m.lastUpdated,
+                                    unit: m.unit,
+                                    sourceName: m.sourceName
+                                });
+                            }
+                        }
+                    });
+                    rtm.publish(channel, out, function (pdu) {
+                        if (!pdu.action.endsWith('/ok')) {
+                            console.log('something went wrong');
+                        }
+                    });
+                }
+                return s;
+            });
+            prev = tmp;
+        });
+    });
+}
+var role = "openaq";
+var roleSecretProvider = RTM.roleSecretAuthProvider(role, roleSecretKey);
+var rtm = new RTM(endpoint, appKey, {
+    authProvider: roleSecretProvider,
+});
+var interval = null;
+var subscription = rtm.subscribe(channel, RTM.SubscriptionMode.SIMPLE);
+subscription.on("enter-subscribed", function () {
+    console.log("Connected to RTM!");
+    if (!interval)
+        interval = setInterval(OPEAQcall, 1000 * 30);
+});
+subscription.on("error", function (error) {
+    console.log("Error connecting to RTM: " + error.message);
+    rtm.stop();
+});
+rtm.start();
+//# sourceMappingURL=app.js.map
